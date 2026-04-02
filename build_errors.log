@@ -1,0 +1,2 @@
+# command-line-arguments
+cmd/synapse/main.go:44:3: unknown field Migrations in struct literal of type migratecmd.Config

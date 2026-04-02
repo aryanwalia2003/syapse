@@ -1,0 +1,20 @@
+# Binaries
+tmp/
+bin/
+*.exe
+*.test
+*.prof
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config
+.env
+*.local
+
+# PocketBase data
+pb_data/
+
+# Dependencies
+# vendor/ # Uncomment if you don't want to vendor
