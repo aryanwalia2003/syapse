@@ -30,7 +30,7 @@ func main() {
 		Source:  "Loginext",
 		Payload: []byte(`{"event": "delivered", "order_id": "ORD-123"}`),
 	}
-	ingestResult := ingest.ProcessIngest(ctx, webhookReq)
+	ingestResult := ingest.ProcessIngest(ctx, webhookReq, nil)
 	logger.Info(ctx, "Webhook ingested", "correlation_id", ingestResult.CorrelationID)
 
 	successResp := api.NewSuccessResponse(map[string]string{"status": "processed"}, ingestResult.CorrelationID)

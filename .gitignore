@@ -18,3 +18,24 @@ pb_data/
 
 # Dependencies
 # vendor/ # Uncomment if you don't want to vendor
+synapse
+build_errors.log
+
+# LLM Context files
+*-context.txt
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local DBs (if any created outside pb_data)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

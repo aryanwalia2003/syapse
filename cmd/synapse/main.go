@@ -14,6 +14,7 @@ import (
 	"github.com/aryanwalia/synapse/internal/core/api"
 	"github.com/aryanwalia/synapse/internal/core/config"
 	"github.com/aryanwalia/synapse/internal/core/logger"
+	sqliteStore "github.com/aryanwalia/synapse/internal/data/pocketbase"
 	_ "github.com/aryanwalia/synapse/internal/data/pocketbase/migrations"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -43,10 +44,12 @@ func main() {
 		Dir:         "internal/data/pocketbase/migrations",
 	})
 
-	// Bind Synapse Server to PB Lifecycle
 	pb.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		// Initialize the Storage Container
+		store := sqliteStore.NewStorage(e.App)
+
 		// Run Synapse HTTP server in a goroutine
-		stopServer := startSynapseServer(ctx, applicationConfig)
+		stopServer := startSynapseServer(ctx, applicationConfig, store)
 
 		// Ensure cleanup on PB exit
 		e.App.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
@@ -64,10 +67,10 @@ func main() {
 }
 
 // startSynapseServer starts the HTTP server and returns a shutdown function
-func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig) func() {
+func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *sqliteStore.Storage) func() {
 	router := http.NewServeMux()
 
-	router.HandleFunc("POST /api/v1/webhook/ingest", handleWebhookIngest)
+	router.HandleFunc("POST /api/v1/webhook/ingest", handleWebhookIngest(store))
 	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy","service":"synapse"}`))
@@ -100,38 +103,40 @@ func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig) func() {
 	}
 }
 
-func handleWebhookIngest(responseWriter http.ResponseWriter, request *http.Request) {
-	ctx := request.Context()
+func handleWebhookIngest(store *sqliteStore.Storage) http.HandlerFunc {
+	return func(responseWriter http.ResponseWriter, request *http.Request) {
+		ctx := request.Context()
 
-	rawPayload, err := io.ReadAll(request.Body)
-	if err != nil {
-		logger.Error(ctx, "Failed to read webhook request body", err)
-		http.Error(responseWriter, "Bad Request", http.StatusBadRequest)
-		return
+		rawPayload, err := io.ReadAll(request.Body)
+		if err != nil {
+			logger.Error(ctx, "Failed to read webhook request body", err)
+			http.Error(responseWriter, "Bad Request", http.StatusBadRequest)
+			return
+		}
+		defer request.Body.Close()
+
+		vendorSource := request.Header.Get("X-Vendor-Source")
+		if vendorSource == "" {
+			vendorSource = "UNKNOWN"
+		}
+
+		webhookRequest := ingest.WebhookRequest{
+			Source:     vendorSource,
+			Payload:    rawPayload,
+			Header:     request.Header,
+			ReceivedAt: time.Now().UTC(),
+		}
+
+		ingestResult := ingest.ProcessIngest(ctx, webhookRequest, store.Webhooks)
+
+		logger.Info(ctx, "Webhook ingest request completed",
+			"source", webhookRequest.Source,
+			"correlation_id", ingestResult.CorrelationID)
+
+		apiResponse := api.NewSuccessResponse(ingestResult, ingestResult.CorrelationID)
+
+		responseWriter.Header().Set("Content-Type", "application/json")
+		responseWriter.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(responseWriter).Encode(apiResponse)
 	}
-	defer request.Body.Close()
-
-	vendorSource := request.Header.Get("X-Vendor-Source")
-	if vendorSource == "" {
-		vendorSource = "UNKNOWN"
-	}
-
-	webhookRequest := ingest.WebhookRequest{
-		Source:     vendorSource,
-		Payload:    rawPayload,
-		Header:     request.Header,
-		ReceivedAt: time.Now().UTC(),
-	}
-
-	ingestResult := ingest.ProcessIngest(ctx, webhookRequest)
-
-	logger.Info(ctx, "Webhook ingest request completed",
-		"source", webhookRequest.Source,
-		"correlation_id", ingestResult.CorrelationID)
-
-	apiResponse := api.NewSuccessResponse(ingestResult, ingestResult.CorrelationID)
-
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(responseWriter).Encode(apiResponse)
 }
