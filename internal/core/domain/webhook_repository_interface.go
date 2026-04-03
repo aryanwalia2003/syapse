@@ -8,9 +8,10 @@ type WebhookRepository interface {
 }
 
 type RawWebhook struct {
-	CorrelationID string `json:"correlation_id"`
-	Source        string `json:"source"`
-	Payload       []byte `json:"payload"`
-	Headers       []byte `json:"headers"`
-	Status        string `json:"status"`
+	ID            string `json:"id" db:"id"`
+	CorrelationID string `json:"correlation_id" db:"correlation_id"`
+	Source        string `json:"source" db:"source"`
+	Payload       []byte `json:"payload" db:"payload"`
+	Headers       []byte `json:"headers" db:"headers"`
+	Status        string `json:"status" db:"status"`
 }
