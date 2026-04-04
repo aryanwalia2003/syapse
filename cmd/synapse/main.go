@@ -13,6 +13,7 @@ import (
 	"github.com/aryanwalia/synapse/internal/adapter/wms/uniware"
 	"github.com/aryanwalia/synapse/internal/core/config"
 	"github.com/aryanwalia/synapse/internal/core/domain"
+	"github.com/aryanwalia/synapse/internal/core/errors"
 	"github.com/aryanwalia/synapse/internal/core/logger"
 	"github.com/aryanwalia/synapse/internal/core/normalization"
 	sqliteStore "github.com/aryanwalia/synapse/internal/data/pocketbase"
@@ -22,6 +23,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
+	"github.com/pocketbase/pocketbase/tools/security"
 )
 
 func main() {
@@ -76,7 +78,7 @@ func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *s
 	normalizationEngine := buildNormalizationEngine()
 
 	// Normalizer dispatched by each worker
-	normalizerFunc := buildNormalizerFunc(normalizationEngine)
+	normalizerFunc := buildNormalizerFunc(normalizationEngine, store)
 
 	// WorkerPool: N partitions + unsorted lane, polling DB every 500ms
 	workerPool := pool.NewWorkerPool(
@@ -130,12 +132,75 @@ func buildNormalizationEngine() *normalization.NormalizationEngine {
 	)
 }
 
-func buildNormalizerFunc(engine *normalization.NormalizationEngine) func(context.Context, *domain.RawWebhook) error {
-	// Route each webhook to the correct normalizer based on Source field.
+func buildNormalizerFunc(engine *normalization.NormalizationEngine, store *sqliteStore.Storage) func(context.Context, *domain.RawWebhook) error {
 	return func(ctx context.Context, wh *domain.RawWebhook) error {
-		// DIS and WMS use the Source field set during ingest
-		_, err := engine.NormalizeDISStatusUpdate(ctx, wh.Source, wh.Payload)
-		return err
+		if wh.WebhookType == string(ingest.WebhookTypeDISStatusUpdate) {
+			statusUpdate, err := engine.NormalizeDISStatusUpdate(ctx, wh.Source, wh.Payload)
+			if err != nil {
+				return err
+			}
+			return store.Orders.UpdateStatus(ctx, statusUpdate.ProviderAWB, string(statusUpdate.NewCanonicalStatus), wh.CorrelationID)
+		} else if wh.WebhookType == string(ingest.WebhookTypeWMSOrderCreation) {
+			normalizedOrder, err := engine.NormalizeWMSOrder(ctx, wh.Source, wh.Payload)
+			if err != nil {
+				return err
+			}
+
+			orderID := "ORD-" + security.RandomString(10)
+			order := &domain.Order{
+				ID:              orderID,
+				BrandID:         "DEFAULT_BRAND",
+				WarehouseID:     "DEFAULT_WAREHOUSE",
+				WMSOrderID:      normalizedOrder.ReferenceCode,
+				CanonicalStatus: string(normalizedOrder.CanonicalStatus),
+			}
+
+			var codAmount int64
+			if normalizedOrder.Financials.PaymentMode == domain.PaymentModeCOD {
+				codAmount = normalizedOrder.Financials.TotalAmountPaise
+			}
+
+			financials := &domain.OrderFinancials{
+				OrderID:        orderID,
+				PaymentMode:    string(normalizedOrder.Financials.PaymentMode),
+				CODAmountPaise: codAmount,
+				Currency:       normalizedOrder.Financials.Currency,
+			}
+
+			metrics := &domain.OrderMetrics{
+				OrderID:     orderID,
+				WeightGrams: normalizedOrder.PackageWeightGrams,
+				LengthCm:    normalizedOrder.Dimensions.LengthCm,
+				WidthCm:     normalizedOrder.Dimensions.WidthCm,
+				HeightCm:    normalizedOrder.Dimensions.HeightCm,
+			}
+
+			recipient := &domain.OrderRecipient{
+				OrderID:     orderID,
+				Name:        normalizedOrder.DeliveryAddress.ContactName,
+				Phone:       normalizedOrder.DeliveryAddress.Phone,
+				City:        normalizedOrder.DeliveryAddress.City,
+				State:       normalizedOrder.DeliveryAddress.State,
+				Pincode:     normalizedOrder.DeliveryAddress.PinCode,
+				FullAddress: normalizedOrder.DeliveryAddress.AddressLine1 + " " + normalizedOrder.DeliveryAddress.AddressLine2,
+			}
+
+			var items []domain.OrderItem
+			for _, item := range normalizedOrder.Items {
+				items = append(items, domain.OrderItem{
+					ID:         "ITEM-" + security.RandomString(10),
+					OrderID:    orderID,
+					SKU:        item.SKU,
+					Name:       item.Name,
+					Quantity:   item.Quantity,
+					PricePaise: item.PricePaise,
+				})
+			}
+
+			return store.Orders.CreateCompositeOrder(ctx, order, financials, metrics, recipient, items)
+		}
+
+		return errors.New(errors.CodeValidation, "unknown webhook type: "+wh.WebhookType)
 	}
 }
 

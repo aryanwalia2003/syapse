@@ -16,6 +16,7 @@ func init() {
 			&core.TextField{Name: "status"},            // PENDING | PROCESSING | DONE | FAILED
 			&core.TextField{Name: "vendor_order_id"},   // extracted from payload for partitioning
 			&core.TextField{Name: "vendor_webhook_id"}, // idempotency key
+			&core.TextField{Name: "webhook_type"},      // WMS_ORDER_CREATION | DIS_STATUS_UPDATE
 			&core.NumberField{Name: "retry_count"},     // 0..maxRetries
 			&core.BoolField{Name: "is_dlq"},            // true after max retries exceeded
 			&core.NumberField{Name: "partition_index"}, // hash(vendor_order_id) % N, or -1
@@ -29,7 +30,7 @@ func init() {
 			return err
 		}
 
-		for _, name := range []string{"status", "vendor_order_id", "vendor_webhook_id", "retry_count", "is_dlq", "partition_index"} {
+		for _, name := range []string{"status", "vendor_order_id", "vendor_webhook_id", "webhook_type", "retry_count", "is_dlq", "partition_index"} {
 			rawCollection.Fields.RemoveByName(name)
 		}
 
