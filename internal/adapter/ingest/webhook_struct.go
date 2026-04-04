@@ -4,11 +4,19 @@ import (
 	"time"
 )
 
+type WebhookType string
+
+const (
+	WebhookTypeWMSOrderCreation WebhookType = "WMS_ORDER_CREATION"
+	WebhookTypeDISStatusUpdate  WebhookType = "DIS_STATUS_UPDATE"
+)
+
 type WebhookRequest struct {
-	Source     string              `json:"source"`
-	Payload    []byte              `json:"payload"`
-	Header     map[string][]string `json:"header"`
-	ReceivedAt time.Time           `json:"received_at"`
+	Type         WebhookType         `json:"type"`
+	ProviderName string              `json:"provider_name"`
+	Payload      []byte              `json:"payload"`
+	Header       map[string][]string `json:"header"`
+	ReceivedAt   time.Time           `json:"received_at"`
 }
 
 type IngestResult struct {

@@ -5,36 +5,113 @@ import (
 	"encoding/json"
 
 	"github.com/aryanwalia/synapse/internal/core/domain"
+	"github.com/aryanwalia/synapse/internal/core/errors"
 	"github.com/aryanwalia/synapse/internal/core/logger"
 	"github.com/google/uuid"
 )
 
-func ProcessIngest(ctx context.Context, req WebhookRequest, webhookRepo domain.WebhookRepository) IngestResult {
+func (p *IngestPipeline) Process(ctx context.Context, req WebhookRequest) IngestResult {
 	correlationID := uuid.New().String()
 
-	// 1. Raw Persistence (Audit Trail)
-	headerBytes, _ := json.Marshal(req.Header)
-	rawWebhook := &domain.RawWebhook{
-		CorrelationID: correlationID,
-		Source:        req.Source,
-		Payload:       req.Payload,
-		Headers:       headerBytes,
-		Status:        "RECEIVED",
+	if persistErr := p.persistRawWebhook(ctx, correlationID, req); persistErr != nil {
+		logger.Error(ctx, "audit trail persistence failed", persistErr,
+			"correlation_id", correlationID,
+			"provider", req.ProviderName,
+		)
 	}
 
-	err := webhookRepo.SaveRaw(ctx, rawWebhook)
-	if err != nil {
-		logger.Error(ctx, "Failed to save raw webhook payload", err, "correlation_id", correlationID)
-		// We still continue or return partial success?
-		// Usually for audit trail, if this fails, we might want to know but not necessarily block.
-		// However, for Synapse, persistence is key.
+	if normalizationErr := p.normalize(ctx, correlationID, req); normalizationErr != nil {
+		logger.Error(ctx, "normalization failed — raw payload preserved for replay", normalizationErr,
+			"correlation_id", correlationID,
+			"provider", req.ProviderName,
+			"webhook_type", req.Type,
+		)
+		return IngestResult{
+			Success:       true,
+			CorrelationID: correlationID,
+			Message:       "Webhook received. Normalization failed; queued for investigation.",
+		}
 	}
 
-	// TODO: Task 4.1 - Vendor Signature Validation
+	logger.Info(ctx, "webhook pipeline completed successfully",
+		"correlation_id", correlationID,
+		"provider", req.ProviderName,
+		"webhook_type", req.Type,
+	)
 
 	return IngestResult{
 		Success:       true,
 		CorrelationID: correlationID,
-		Message:       "Webhook received and securely logged",
+		Message:       "Webhook received and normalized successfully.",
 	}
+}
+
+func (p *IngestPipeline) persistRawWebhook(ctx context.Context, correlationID string, req WebhookRequest) error {
+	headerBytes, err := json.Marshal(req.Header)
+	if err != nil {
+		return errors.Wrap(err, errors.CodeInternal, "failed to marshal request headers for audit trail")
+	}
+
+	rawWebhook := &domain.RawWebhook{
+		CorrelationID: correlationID,
+		Source:        req.ProviderName,
+		Payload:       req.Payload,
+		Headers:       headerBytes,
+		Status:        "RECEIVED",
+		ReceivedAt:    req.ReceivedAt,
+	}
+
+	return p.webhookRepository.SaveRaw(ctx, rawWebhook)
+}
+func (p *IngestPipeline) normalize(ctx context.Context, correlationID string, req WebhookRequest) error {
+	switch req.Type {
+	case WebhookTypeDISStatusUpdate:
+		return p.normalizeDISStatusUpdate(ctx, correlationID, req)
+
+	case WebhookTypeWMSOrderCreation:
+		return p.normalizeWMSOrderCreation(ctx, correlationID, req)
+
+	default:
+		return errors.New(errors.CodeValidation,
+			"unknown webhook type: "+string(req.Type),
+		)
+	}
+}
+
+func (p *IngestPipeline) normalizeDISStatusUpdate(ctx context.Context, correlationID string, req WebhookRequest) error {
+	statusUpdate, err := p.normalizationEngine.NormalizeDISStatusUpdate(ctx, req.ProviderName, req.Payload)
+	if err != nil {
+		return err
+	}
+
+	// TODO (Orchestration): Hand statusUpdate to the OrchestratorEngine.
+	// The orchestrator will: resolve the order, update canonical status,
+	// trigger billing, comms, and WMS update — all as separate async tasks.
+	// For now, log the normalized result as a development checkpoint.
+	logger.Info(ctx, "DIS status update normalized",
+		"correlation_id", correlationID,
+		"provider_awb", statusUpdate.ProviderAWB,
+		"provider_raw_status", statusUpdate.ProviderRawStatus,
+		"canonical_status", statusUpdate.NewCanonicalStatus,
+	)
+
+	return nil
+}
+
+func (p *IngestPipeline) normalizeWMSOrderCreation(ctx context.Context, correlationID string, req WebhookRequest) error {
+	normalizedOrder, err := p.normalizationEngine.NormalizeWMSOrder(ctx, req.ProviderName, req.Payload)
+	if err != nil {
+		return err
+	}
+
+	// TODO (Orchestration): Hand normalizedOrder to the OrchestratorEngine.
+	// The orchestrator will persist the order, assign it a DIS, and dispatch.
+	logger.Info(ctx, "WMS order creation normalized",
+		"correlation_id", correlationID,
+		"reference_code", normalizedOrder.ReferenceCode,
+		"canonical_status", normalizedOrder.CanonicalStatus,
+		"item_count", len(normalizedOrder.Items),
+	)
+
+	return nil
 }

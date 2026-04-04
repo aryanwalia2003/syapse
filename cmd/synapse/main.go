@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/aryanwalia/synapse/internal/adapter/dis/loginext"
 	"github.com/aryanwalia/synapse/internal/adapter/ingest"
-	"github.com/aryanwalia/synapse/internal/core/api"
+	"github.com/aryanwalia/synapse/internal/adapter/wms/uniware"
 	"github.com/aryanwalia/synapse/internal/core/config"
+	"github.com/aryanwalia/synapse/internal/core/domain"
 	"github.com/aryanwalia/synapse/internal/core/logger"
+	"github.com/aryanwalia/synapse/internal/core/normalization"
 	sqliteStore "github.com/aryanwalia/synapse/internal/data/pocketbase"
 	_ "github.com/aryanwalia/synapse/internal/data/pocketbase/migrations"
 	"github.com/pocketbase/pocketbase"
@@ -66,11 +67,25 @@ func main() {
 	}
 }
 
-// startSynapseServer starts the HTTP server and returns a shutdown function
 func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *sqliteStore.Storage) func() {
 	router := http.NewServeMux()
 
-	router.HandleFunc("POST /api/v1/webhook/ingest", handleWebhookIngest(store))
+	normalizationEngine := normalization.NewNormalizationEngine(
+		[]domain.WMSNormalizer{
+			uniware.NewUniwareNormalizer(),
+		},
+		[]domain.DISNormalizer{
+			loginext.NewLoginextNormalizer(),
+		},
+	)
+
+	ingestPipeline := ingest.NewIngestPipeline(normalizationEngine, store.Webhooks)
+
+	// DIS status updates (e.g. Loginext, Valkyrie)
+	router.HandleFunc("POST /api/v1/webhook/dis/{provider}", ingest.HandleDISWebhook(ingestPipeline))
+	// WMS order creation (e.g. Uniware, EasyEcom)
+	router.HandleFunc("POST /api/v1/webhook/wms/{provider}", ingest.HandleWMSWebhook(ingestPipeline))
+
 	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy","service":"synapse"}`))
@@ -100,43 +115,5 @@ func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *s
 			logger.Error(ctx, "Synapse HTTP server forced shutdown", err)
 		}
 		logger.Info(ctx, "Synapse HTTP Server stopped")
-	}
-}
-
-func handleWebhookIngest(store *sqliteStore.Storage) http.HandlerFunc {
-	return func(responseWriter http.ResponseWriter, request *http.Request) {
-		ctx := request.Context()
-
-		rawPayload, err := io.ReadAll(request.Body)
-		if err != nil {
-			logger.Error(ctx, "Failed to read webhook request body", err)
-			http.Error(responseWriter, "Bad Request", http.StatusBadRequest)
-			return
-		}
-		defer request.Body.Close()
-
-		vendorSource := request.Header.Get("X-Vendor-Source")
-		if vendorSource == "" {
-			vendorSource = "UNKNOWN"
-		}
-
-		webhookRequest := ingest.WebhookRequest{
-			Source:     vendorSource,
-			Payload:    rawPayload,
-			Header:     request.Header,
-			ReceivedAt: time.Now().UTC(),
-		}
-
-		ingestResult := ingest.ProcessIngest(ctx, webhookRequest, store.Webhooks)
-
-		logger.Info(ctx, "Webhook ingest request completed",
-			"source", webhookRequest.Source,
-			"correlation_id", ingestResult.CorrelationID)
-
-		apiResponse := api.NewSuccessResponse(ingestResult, ingestResult.CorrelationID)
-
-		responseWriter.Header().Set("Content-Type", "application/json")
-		responseWriter.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(responseWriter).Encode(apiResponse)
 	}
 }
