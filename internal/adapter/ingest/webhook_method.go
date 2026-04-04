@@ -18,22 +18,15 @@ func (p *IngestPipeline) Process(ctx context.Context, req WebhookRequest) Ingest
 			"correlation_id", correlationID,
 			"provider", req.ProviderName,
 		)
-	}
 
-	if normalizationErr := p.normalize(ctx, correlationID, req); normalizationErr != nil {
-		logger.Error(ctx, "normalization failed — raw payload preserved for replay", normalizationErr,
-			"correlation_id", correlationID,
-			"provider", req.ProviderName,
-			"webhook_type", req.Type,
-		)
 		return IngestResult{
-			Success:       true,
+			Success:       false,
 			CorrelationID: correlationID,
-			Message:       "Webhook received. Normalization failed; queued for investigation.",
+			Message:       "Internal Server Error ; failed to securely persist raw webhook.",
 		}
 	}
 
-	logger.Info(ctx, "webhook pipeline completed successfully",
+	logger.Info(ctx, "webhook persisted successfully",
 		"correlation_id", correlationID,
 		"provider", req.ProviderName,
 		"webhook_type", req.Type,
@@ -42,7 +35,7 @@ func (p *IngestPipeline) Process(ctx context.Context, req WebhookRequest) Ingest
 	return IngestResult{
 		Success:       true,
 		CorrelationID: correlationID,
-		Message:       "Webhook received and normalized successfully.",
+		Message:       "Webhook accepted.",
 	}
 }
 
@@ -52,12 +45,14 @@ func (p *IngestPipeline) persistRawWebhook(ctx context.Context, correlationID st
 		return errors.Wrap(err, errors.CodeInternal, "failed to marshal request headers for audit trail")
 	}
 
+	// Just hard-code PENDING outbox fields - extracting logic can be updated later if needed.
+	// Assume partition and extractor logic applies in worker layer or here, we are making it bare minimal.
 	rawWebhook := &domain.RawWebhook{
 		CorrelationID: correlationID,
 		Source:        req.ProviderName,
 		Payload:       req.Payload,
 		Headers:       headerBytes,
-		Status:        "RECEIVED",
+		Status:        "PENDING", // Changed from RECEIVED to PENDING
 		ReceivedAt:    req.ReceivedAt,
 	}
 

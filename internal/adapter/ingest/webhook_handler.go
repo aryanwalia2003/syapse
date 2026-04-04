@@ -30,6 +30,11 @@ func HandleDISWebhook(pipeline *IngestPipeline) http.HandlerFunc {
 			ReceivedAt:   time.Now().UTC(),
 		})
 
+		if !result.Success {
+			api.WriteError(w, r, errors.New(errors.CodeInternal, result.Message))
+			return
+		}
+
 		api.WriteSuccess(w, r, result, result.CorrelationID)
 	}
 }
@@ -52,6 +57,11 @@ func HandleWMSWebhook(pipeline *IngestPipeline) http.HandlerFunc {
 			Header:       r.Header,
 			ReceivedAt:   time.Now().UTC(),
 		})
+
+		if !result.Success {
+			api.WriteError(w, r, errors.New(errors.CodeInternal, result.Message))
+			return
+		}
 
 		api.WriteSuccess(w, r, result, result.CorrelationID)
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/aryanwalia/synapse/internal/adapter/ingest"
 	"github.com/aryanwalia/synapse/internal/core/api"
 	"github.com/aryanwalia/synapse/internal/core/config"
 	"github.com/aryanwalia/synapse/internal/core/errors"
@@ -26,18 +25,11 @@ func main() {
 		logger.Info(ctx, "Configuration loaded successfully", "port", cfg.Server.Port, "pb_url", cfg.Database.PocketBaseURL)
 	}
 
-	webhookReq := ingest.WebhookRequest{
-		Source:  "Loginext",
-		Payload: []byte(`{"event": "delivered", "order_id": "ORD-123"}`),
-	}
-	ingestResult := ingest.ProcessIngest(ctx, webhookReq, nil)
-	logger.Info(ctx, "Webhook ingested", "correlation_id", ingestResult.CorrelationID)
-
-	successResp := api.NewSuccessResponse(map[string]string{"status": "processed"}, ingestResult.CorrelationID)
+	successResp := api.NewSuccessResponse(map[string]string{"status": "processed"}, "debug-1234")
 	printJSON("Success Response", successResp)
 
 	appErr := errors.New(errors.CodeValidation, "invalid signature detected")
-	errorResp := api.NewErrorResponse(appErr, ingestResult.CorrelationID)
+	errorResp := api.NewErrorResponse(appErr, "debug-1234")
 	printJSON("Error Response", errorResp)
 }
 
