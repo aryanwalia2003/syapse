@@ -17,6 +17,8 @@ import (
 	"github.com/aryanwalia/synapse/internal/core/normalization"
 	sqliteStore "github.com/aryanwalia/synapse/internal/data/pocketbase"
 	_ "github.com/aryanwalia/synapse/internal/data/pocketbase/migrations"
+	"github.com/aryanwalia/synapse/internal/ingest/pool"
+	"github.com/aryanwalia/synapse/internal/ingest/sweeper"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
@@ -68,28 +70,30 @@ func main() {
 }
 
 func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *sqliteStore.Storage) func() {
-	router := http.NewServeMux()
+	// Background services share a cancellable context
+	serviceCtx, cancelServices := context.WithCancel(ctx)
 
-	normalizationEngine := normalization.NewNormalizationEngine(
-		[]domain.WMSNormalizer{
-			uniware.NewUniwareNormalizer(),
-		},
-		[]domain.DISNormalizer{
-			loginext.NewLoginextNormalizer(),
-		},
+	normalizationEngine := buildNormalizationEngine()
+
+	// Normalizer dispatched by each worker
+	normalizerFunc := buildNormalizerFunc(normalizationEngine)
+
+	// WorkerPool: N partitions + unsorted lane, polling DB every 500ms
+	workerPool := pool.NewWorkerPool(
+		pool.PoolConfig{N: 8},
+		store.Webhooks,
+		normalizerFunc,
 	)
+	workerPool.Start(serviceCtx)
 
+	// Sweeper: resets PROCESSING jobs stuck > 10 minutes
+	jobSweeper := sweeper.NewSweeper(store.Webhooks, 10*time.Minute)
+	go jobSweeper.Run(serviceCtx)
+
+	// HTTP ingest pipeline (outbox write only)
 	ingestPipeline := ingest.NewIngestPipeline(normalizationEngine, store.Webhooks)
 
-	// DIS status updates (e.g. Loginext, Valkyrie)
-	router.HandleFunc("POST /api/v1/webhook/dis/{provider}", ingest.HandleDISWebhook(ingestPipeline))
-	// WMS order creation (e.g. Uniware, EasyEcom)
-	router.HandleFunc("POST /api/v1/webhook/wms/{provider}", ingest.HandleWMSWebhook(ingestPipeline))
-
-	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy","service":"synapse"}`))
-	})
+	router := buildRouter(ingestPipeline)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
@@ -106,14 +110,42 @@ func startSynapseServer(ctx context.Context, cfg *config.SynapseConfig, store *s
 		}
 	}()
 
-	// Graceful shutdown logic for the Synapse server
 	return func() {
-		logger.Info(ctx, "Shutting down Synapse HTTP Server...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		logger.Info(ctx, "Shutting down Synapse services...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error(ctx, "Synapse HTTP server forced shutdown", err)
-		}
-		logger.Info(ctx, "Synapse HTTP Server stopped")
+		// Stop HTTP — no new requests
+		server.Shutdown(shutdownCtx)
+		// Cancel serviceCtx — pool pollers and sweeper exit gracefully
+		cancelServices()
+		workerPool.Stop()
+		logger.Info(ctx, "Synapse services stopped cleanly")
 	}
+}
+
+func buildNormalizationEngine() *normalization.NormalizationEngine {
+	return normalization.NewNormalizationEngine(
+		[]domain.WMSNormalizer{uniware.NewUniwareNormalizer()},
+		[]domain.DISNormalizer{loginext.NewLoginextNormalizer()},
+	)
+}
+
+func buildNormalizerFunc(engine *normalization.NormalizationEngine) func(context.Context, *domain.RawWebhook) error {
+	// Route each webhook to the correct normalizer based on Source field.
+	return func(ctx context.Context, wh *domain.RawWebhook) error {
+		// DIS and WMS use the Source field set during ingest
+		_, err := engine.NormalizeDISStatusUpdate(ctx, wh.Source, wh.Payload)
+		return err
+	}
+}
+
+func buildRouter(pipeline *ingest.IngestPipeline) *http.ServeMux {
+	router := http.NewServeMux()
+	router.HandleFunc("POST /api/v1/webhook/dis/{provider}", ingest.HandleDISWebhook(pipeline))
+	router.HandleFunc("POST /api/v1/webhook/wms/{provider}", ingest.HandleWMSWebhook(pipeline))
+	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy","service":"synapse"}`))
+	})
+	return router
 }

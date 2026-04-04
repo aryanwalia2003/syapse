@@ -44,7 +44,7 @@ func TestWorkerIntegration_SequentialProcessing(t *testing.T) {
 	}
 
 	repo := &mockRepo{}
-	pool := NewWorkerPool(8, repo, targetFunc)
+	pool := NewWorkerPool(PoolConfig{N: 8}, repo, targetFunc)
 
 	// manually start workers for testing
 	ctx, cancel := context.WithCancel(context.Background())

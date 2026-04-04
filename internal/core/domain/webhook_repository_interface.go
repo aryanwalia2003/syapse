@@ -30,6 +30,7 @@ type RawWebhook struct {
 
 	VendorOrderID   string `json:"vendor_order_id" db:"vendor_order_id"`
 	VendorWebhookID string `json:"vendor_webhook_id" db:"vendor_webhook_id"` // Nullable
+	WebhookType     string `json:"webhook_type" db:"webhook_type"`           // WMS_ORDER_CREATION | DIS_STATUS_UPDATE
 	RetryCount      int    `json:"retry_count" db:"retry_count"`
 	IsDLQ           bool   `json:"is_dlq" db:"is_dlq"`
 	PartitionIndex  int    `json:"partition_index" db:"partition_index"`

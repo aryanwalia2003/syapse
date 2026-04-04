@@ -54,6 +54,7 @@ func (p *IngestPipeline) persistRawWebhook(ctx context.Context, correlationID st
 		Headers:       headerBytes,
 		Status:        "PENDING", // Changed from RECEIVED to PENDING
 		ReceivedAt:    req.ReceivedAt,
+		WebhookType:   string(req.Type),
 	}
 
 	return p.webhookRepository.SaveRaw(ctx, rawWebhook)
