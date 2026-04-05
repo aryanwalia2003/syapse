@@ -39,6 +39,10 @@ func (m *pollingMockRepo) MarkProcessing(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *pollingMockRepo) MarkDone(ctx context.Context, id string) error       { return nil }
+func (m *pollingMockRepo) MarkFailed(ctx context.Context, id string) error     { return nil }
+func (m *pollingMockRepo) IncrementRetry(ctx context.Context, id string) error { return nil }
+
 func TestPollingLoop_DispatchesToCorrectChannel(t *testing.T) {
 	repo := &pollingMockRepo{
 		pendingByPartition: map[int][]*domain.RawWebhook{

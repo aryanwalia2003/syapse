@@ -23,11 +23,12 @@ func HandleDISWebhook(pipeline *IngestPipeline) http.HandlerFunc {
 		}
 
 		result := pipeline.Process(r.Context(), WebhookRequest{
-			Type:         WebhookTypeDISStatusUpdate,
-			ProviderName: providerName,
-			Payload:      body,
-			Header:       r.Header,
-			ReceivedAt:   time.Now().UTC(),
+			Type:              WebhookTypeDISStatusUpdate,
+			ProviderName:      providerName,
+			Payload:           body,
+			Header:            r.Header,
+			ReceivedAt:        time.Now().UTC(),
+			VendorOrderIDPath: "orderNo", // Loginext sends the AWB as orderNo
 		})
 
 		if !result.Success {
@@ -51,11 +52,12 @@ func HandleWMSWebhook(pipeline *IngestPipeline) http.HandlerFunc {
 		}
 
 		result := pipeline.Process(r.Context(), WebhookRequest{
-			Type:         WebhookTypeWMSOrderCreation,
-			ProviderName: providerName,
-			Payload:      body,
-			Header:       r.Header,
-			ReceivedAt:   time.Now().UTC(),
+			Type:              WebhookTypeWMSOrderCreation,
+			ProviderName:      providerName,
+			Payload:           body,
+			Header:            r.Header,
+			ReceivedAt:        time.Now().UTC(),
+			VendorOrderIDPath: "referenceNumber", // Uniware sends order ID as referenceNumber
 		})
 
 		if !result.Success {

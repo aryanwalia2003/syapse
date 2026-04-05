@@ -7,6 +7,7 @@ import (
 	"github.com/aryanwalia/synapse/internal/core/domain"
 	"github.com/aryanwalia/synapse/internal/core/errors"
 	"github.com/aryanwalia/synapse/internal/core/logger"
+	"github.com/aryanwalia/synapse/internal/ingest/partition"
 	"github.com/google/uuid"
 )
 
@@ -45,16 +46,22 @@ func (p *IngestPipeline) persistRawWebhook(ctx context.Context, correlationID st
 		return errors.Wrap(err, errors.CodeInternal, "failed to marshal request headers for audit trail")
 	}
 
-	// Just hard-code PENDING outbox fields - extracting logic can be updated later if needed.
-	// Assume partition and extractor logic applies in worker layer or here, we are making it bare minimal.
+	vendorOrderID := partition.ExtractVendorOrderID(req.Payload, req.VendorOrderIDPath)
+	partitionIndex := partition.UnsortedPartition()
+	if vendorOrderID != "" {
+		partitionIndex = partition.HashPartition(vendorOrderID, 8)
+	}
+
 	rawWebhook := &domain.RawWebhook{
-		CorrelationID: correlationID,
-		Source:        req.ProviderName,
-		Payload:       req.Payload,
-		Headers:       headerBytes,
-		Status:        "PENDING", // Changed from RECEIVED to PENDING
-		ReceivedAt:    req.ReceivedAt,
-		WebhookType:   string(req.Type),
+		CorrelationID:  correlationID,
+		Source:         req.ProviderName,
+		Payload:        req.Payload,
+		Headers:        headerBytes,
+		Status:         "PENDING",
+		ReceivedAt:     req.ReceivedAt,
+		WebhookType:    string(req.Type),
+		VendorOrderID:  vendorOrderID,
+		PartitionIndex: partitionIndex,
 	}
 
 	return p.webhookRepository.SaveRaw(ctx, rawWebhook)

@@ -12,11 +12,12 @@ const (
 )
 
 type WebhookRequest struct {
-	Type         WebhookType         `json:"type"`
-	ProviderName string              `json:"provider_name"`
-	Payload      []byte              `json:"payload"`
-	Header       map[string][]string `json:"header"`
-	ReceivedAt   time.Time           `json:"received_at"`
+	Type              WebhookType         `json:"type"`
+	ProviderName      string              `json:"provider_name"`
+	Payload           []byte              `json:"payload"`
+	Header            map[string][]string `json:"header"`
+	ReceivedAt        time.Time           `json:"received_at"`
+	VendorOrderIDPath string              `json:"vendor_order_id_path"` // gjson path to extract VendorOrderID
 }
 
 type IngestResult struct {

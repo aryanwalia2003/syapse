@@ -82,13 +82,34 @@ func (p *WorkerPool) Route(webhook *domain.RawWebhook) {
 }
 
 // Start launches N partition pollers + 1 unsorted poller, each running in their own goroutine.
+// It also launches a consumer goroutine per worker channel so that dispatched webhooks are
+// actually processed — without these the channels would fill up and block forever.
 func (p *WorkerPool) Start(ctx context.Context) {
+	// Launch partition pollers.
 	for i := 0; i < p.cfg.N; i++ {
 		p.wg.Add(1)
 		go p.runPoller(ctx, i)
 	}
+	// Launch unsorted poller.
 	p.wg.Add(1)
 	go p.runPoller(ctx, partition.UnsortedPartition())
+
+	// Launch consumers — one goroutine per worker channel.
+	for i := 0; i < p.cfg.N; i++ {
+		w := p.workers[i]
+		ch := p.workerChans[i]
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			w.Run(ctx, ch, p.targetFunc)
+		}()
+	}
+	// Launch consumer for the unsorted channel.
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.unsorted.Run(ctx, p.unsortedCh, p.targetFunc)
+	}()
 }
 
 func (p *WorkerPool) runPoller(ctx context.Context, partitionIdx int) {

@@ -27,6 +27,24 @@ func NewWorker(config WorkerConfig) *Worker {
 	}
 }
 
+// Run reads webhooks from ch and calls processWebhook for each one.
+// It exits when ctx is cancelled or ch is closed.
+func (w *Worker) Run(ctx context.Context, ch <-chan *domain.RawWebhook, targetFunc func(context.Context, *domain.RawWebhook) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case wh, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := w.processWebhook(ctx, wh, targetFunc); err != nil {
+				logger.Error(ctx, "worker failed to process webhook", err, "worker", w.name, "id", wh.ID)
+			}
+		}
+	}
+}
+
 // targetFunc abstracts the actual normalizer execution to allow easier testing.
 // In actual use, this function invokes the normalization engine.
 func (w *Worker) processWebhook(ctx context.Context, wh *domain.RawWebhook, targetFunc func(context.Context, *domain.RawWebhook) error) error {
@@ -58,16 +76,11 @@ func (w *Worker) processWebhook(ctx context.Context, wh *domain.RawWebhook, targ
 }
 
 func (w *Worker) handleFailure(ctx context.Context, wh *domain.RawWebhook) error {
-	w.repo.IncrementRetry(ctx, wh.ID)
-	// After IncrementRetry, the RetryCount is technically wh.RetryCount + 1.
-	// But we check if it has already reached the maximum BEFORE this failure!
-	// Wait, actually testing maxRetries = 3.
-	// If it was 0, it becomes 1. If 1, becomes 2. If 2, becomes 3.
-	// If it was 3 previously (maybe it failed 3 times), we mark it failed.
-	// Or we mark it failed if retry count will exceed max. Check PRD.
-	if wh.RetryCount >= maxRetries {
-		logger.Error(ctx, "max retries exceeded, moving to DLQ", nil, "id", wh.ID)
+	if wh.RetryCount+1 >= maxRetries {
 		w.repo.MarkFailed(ctx, wh.ID)
+		logger.Error(ctx, "max retries exceeded, moving to DLQ", nil, "id", wh.ID)
+		return nil
 	}
+	w.repo.IncrementRetry(ctx, wh.ID)
 	return nil
 }
